@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 
@@ -83,43 +84,49 @@ if (!empty($config->availabilityDomains)) {
     if (is_array($config->availabilityDomains)) {
         $availabilityDomains = $config->availabilityDomains;
     } else {
-        $availabilityDomains = [ $config->availabilityDomains ];
+        $availabilityDomains = [$config->availabilityDomains];
     }
 } else {
     $availabilityDomains = $api->getAvailabilityDomains($config);
 }
 
-foreach ($availabilityDomains as $availabilityDomainEntity) {
-    $availabilityDomain = is_array($availabilityDomainEntity) ? $availabilityDomainEntity['name'] : $availabilityDomainEntity;
-    try {
-        $instanceDetails = $api->createInstance($config, $shape, getenv('OCI_SSH_PUBLIC_KEY'), $availabilityDomain);
-    } catch(ApiCallException $e) {
-        $message = $e->getMessage();
-        echo "$message\n";
-//            if ($notifier->isSupported()) {
-//                $notifier->notify($message);
-//            }
+$start_time = time();
+$loop = true;
+$already_sent_error_notif = false;
+while ($loop) {
+    foreach ($availabilityDomains as $availabilityDomainEntity) {
+        $availabilityDomain = is_array($availabilityDomainEntity) ? $availabilityDomainEntity['name'] : $availabilityDomainEntity;
+        try {
+            $instanceDetails = $api->createInstance($config, $shape, getenv('OCI_SSH_PUBLIC_KEY'), $availabilityDomain);
+        } catch (ApiCallException $e) {
+            $message = $e->getMessage();
+            echo "$message\n";
+            $error_out = false;
+            if (
+                $e->getCode() === 500 &&
+                strpos($message, 'InternalError') !== false &&
+                strpos($message, 'Out of host capacity') !== false
+            ) {
+                $error_out = true;
+            }
 
-        if (
-            $e->getCode() === 500 &&
-            strpos($message, 'InternalError') !== false &&
-            strpos($message, 'Out of host capacity') !== false
-        ) {
-            // trying next availability domain
-            sleep(16);
-            continue;
+            if ($notifier->isSupported() && ((!$already_sent_error_notif && $error_out) || !$error_out)) {
+                $notifier->notify($message);
+                $already_sent_error_notif = true;
+            }
         }
 
-        // current config is broken
-        return;
+        // success
+        if ($e->getCode() == 200) {
+            $message = json_encode($instanceDetails, JSON_PRETTY_PRINT);
+            echo "$message\n";
+            if ($notifier->isSupported()) {
+                $notifier->notify($message);
+            }
+            return;
+        }
+        sleep(20);
+        $now_time = time();
+        if ($now_time - $start_time >= 60) $loop = false;
     }
-
-    // success
-    $message = json_encode($instanceDetails, JSON_PRETTY_PRINT);
-    echo "$message\n";
-    if ($notifier->isSupported()) {
-        $notifier->notify($message);
-    }
-
-    return;
 }
